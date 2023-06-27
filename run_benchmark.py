@@ -35,7 +35,7 @@ def rand_str(length):
 def main():
     args = parse_args()
 
-    name = f"benchmark-thor-{args.thor_version[:10]}-{rand_str(5)}"
+    name = f"benchmark-thor-{args.instance}-{args.thor_version[:6]}-{rand_str(4)}"
 
     instance = create_instance.create_instance(
         project_id=PROJECT,
@@ -43,7 +43,7 @@ def main():
         instance_name=name,
         service_account=create_instance.service_account(
             "thor-benchmarker@moeyens-thor-dev.iam.gserviceaccount.com",
-            ["storage-rw"],
+            ["https://www.googleapis.com/auth/cloud-platform"]
         ),
         disks=[
             create_instance.disk_from_image(
@@ -70,10 +70,11 @@ def main():
         ssh.execute_command("sudo chmod 777 /opt")
         ssh.execute_command("git clone https://github.com/moeyensj/thor.git /opt/thor")
         ssh.execute_command("git clone https://github.com/oorb/oorb.git /opt/oorb")
-        ssh.execute_command("pip install numpy")
+        ssh.execute_command("pip install numpy==1.24")
         ssh.execute_command("sudo ln -sf ~/.local/bin/f2py /usr/bin/f2py")
         ssh.execute_command("cd /opt/oorb && ./configure gfortran opt --with-pyoorb --with-f2py=/usr/bin/f2py --with-python=python3")
         ssh.execute_command("sudo pip install -v /opt/oorb")
+        ssh.execute_command("pip uninstall numpy -y")
         ssh.execute_command("cd /opt/oorb && make ephem")
         ssh.execute_command("cd /opt/thor && git checkout {}".format(args.thor_version))
         ssh.execute_command("cd /opt/thor && sudo pip install -v .")
@@ -86,15 +87,15 @@ def main():
 
         # Download data
         ssh.execute_command("mkdir /opt/thor-data /opt/thor-output")
-        ssh.execute_command("gsutil cp gs://thor-benchmark-data/{}/config.yaml /opt/thor-data/config.yaml".format(args.dataset))
-        ssh.execute_command("gsutil cp gs://thor-benchmark-data/{}/observations.csv /opt/thor-data/observations.csv".format(args.dataset))
-        ssh.execute_command("gsutil cp gs://thor-benchmark-data/{}/orbits.csv /opt/thor-data/orbits.csv".format(args.dataset))
+        ssh.execute_command(f"gsutil cp gs://thor-benchmark-data/{args.dataset}/config.yaml /opt/thor-data/config.yaml")
+        ssh.execute_command(f"gsutil cp gs://thor-benchmark-data/{args.dataset}/observations.csv /opt/thor-data/observations.csv")
+        ssh.execute_command(f"gsutil cp gs://thor-benchmark-data/{args.dataset}/orbits.csv /opt/thor-data/orbits.csv")
 
         # Note the time
         ssh.execute_command("date > /opt/thor-output/start_time.txt")
 
         # Run THOR
-        ssh.execute_command("export OORB_DATA=/opt/oorb/data && python3 /opt/thor/runTHOR.py --config /opt/thor-data/config.yaml /opt/thor-data/observations.csv /opt/thor-data/orbits.csv /opt/thor-output/")
+        ssh.execute_command("export OORB_DATA=/opt/oorb/data && python3 /opt/thor/runTHOR.py --config /opt/thor-data/config.yaml /opt/thor-data/observations.csv /opt/thor-data/orbits.csv /opt/thor-output/thor/")
 
         # Note the time
         ssh.execute_command("date > /opt/thor-output/end_time.txt")
@@ -103,10 +104,11 @@ def main():
         ssh.execute_command("sudo cp /var/log/sysstat/sa* /opt/thor-output/")
 
         # Copy output to GCS
-        ssh.execute_command("gsutil cp -r /opt/thor-output gs://thor-benchmark-data/{}/results/".format(args.dataset))
+        ssh.execute_command(f"gsutil cp -r /opt/thor-output gs://thor-benchmark-data/{args.dataset}/results/")
 
-
-
+        print("all done!")
+        print(f"results are in gs://thor-benchmark-data/{args.dataset}/results/{args.name}")
+        print(f"download command: \n\tgsutil cp -r gs://thor-benchmark-data/{args.dataset}/results/ .")
 
     except Exception as e:
         print(e)
