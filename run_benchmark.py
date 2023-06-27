@@ -107,7 +107,7 @@ def main():
         ssh.execute_command(f"gsutil cp -r /opt/thor-output gs://thor-benchmark-data/{args.dataset}/results/{name}/")
 
         print("all done!")
-        print(f"results are in gs://thor-benchmark-data/{args.dataset}/results/{args.name}")
+        print(f"results are in gs://thor-benchmark-data/{args.dataset}/results/{name}")
         print(f"download command: \n\tgsutil cp -r gs://thor-benchmark-data/{args.dataset}/results/{name}/ .")
 
     except Exception as e:
