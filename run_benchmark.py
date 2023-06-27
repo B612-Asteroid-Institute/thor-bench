@@ -68,7 +68,7 @@ def main():
         ssh.execute_command("sudo pip install -v /opt/oorb")
         ssh.execute_command("cd /opt/oorb && make ephem")
         ssh.execute_command("cd /opt/thor && git checkout {}".format(args.thor_version))
-        ssh.execute_command("cd /opt/thor && sudo pip install -r requirements.txt && sudo pip install -v .")
+        ssh.execute_command("cd /opt/thor && sudo pip install -v .")
         ssh.execute_command("export OORB_DATA=/opt/oorb/data && python3 /opt/thor/runTHOR.py --help")
         
 
