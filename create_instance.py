@@ -9,6 +9,10 @@ from google.api_core.extended_operation import ExtendedOperation
 from google.cloud import compute_v1
 
 
+def service_account(email: str, scopes: list[str]) -> compute_v1.ServiceAccount:
+    return compute_v1.ServiceAccount(email=email, scopes=scopes)
+
+
 def get_image_from_family(project: str, family: str) -> compute_v1.Image:
     """
     Retrieve the newest image that is part of a given family in a project.
@@ -117,6 +121,7 @@ def create_instance(
     zone: str,
     instance_name: str,
     disks: list[compute_v1.AttachedDisk],
+    service_account: compute_v1.ServiceAccount,
     machine_type: str = "n1-standard-1",
     network_link: str = "global/networks/default",
     subnetwork_link: str = None,
@@ -226,6 +231,9 @@ def create_instance(
     if delete_protection:
         # Set the delete protection bit
         instance.deletion_protection = True
+
+    # Set the service account
+    instance.service_accounts = [service_account]
 
     # Prepare the request to insert an instance.
     request = compute_v1.InsertInstanceRequest()

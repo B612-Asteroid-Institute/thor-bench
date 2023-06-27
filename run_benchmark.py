@@ -12,10 +12,10 @@ def parse_args():
 
     parser.add_argument('-i', '--instance', type=str, required=True,
                         help='The instance class to launch')
-    
+
     parser.add_argument('-t', '--thor-version', type=str, required=True,
                         help='The version of thor to install (as a git SHA)')
-    
+
     parser.add_argument('-d', '--dataset', type=str, required=True,
                         help='The specific dataset inputs to provide')
 
@@ -23,7 +23,7 @@ def parse_args():
                         help="The username to use for the SSH key")
     parser.add_argument("--no-cleanup", action="store_false", dest="cleanup",
                         help="Do not delete the instance after running")
-                        
+
     args = parser.parse_args()
     return args
 
@@ -36,11 +36,15 @@ def main():
     args = parse_args()
 
     name = f"benchmark-thor-{args.thor_version[:10]}-{rand_str(5)}"
-    
+
     instance = create_instance.create_instance(
         project_id=PROJECT,
         zone=ZONE,
         instance_name=name,
+        service_account=create_instance.service_account(
+            "thor-benchmarker@moeyens-thor-dev.iam.gserviceaccount.com",
+            ["storage-rw"],
+        ),
         disks=[
             create_instance.disk_from_image(
                 disk_type=f"zones/{ZONE}/diskTypes/pd-standard",
@@ -56,9 +60,13 @@ def main():
         print("connecting to instance")
         ssh = ssh_instance.SSH(PROJECT, name, ZONE)
         ssh.wait_for_connection()
+
+        # Install system dependencies
         ssh.execute_command("sudo add-apt-repository -y http://us-west1.gce.archive.ubuntu.com/ubuntu")
         ssh.execute_command("sudo apt-get update -y")
-        ssh.execute_command("sudo apt-get install -y git python3-pip python3 gfortran liblapack-dev")
+        ssh.execute_command("sudo apt-get install -y git python3-pip python3 gfortran liblapack-dev sysstat")
+
+        # Install openorb and thor
         ssh.execute_command("sudo chmod 777 /opt")
         ssh.execute_command("git clone https://github.com/moeyensj/thor.git /opt/thor")
         ssh.execute_command("git clone https://github.com/oorb/oorb.git /opt/oorb")
@@ -70,7 +78,35 @@ def main():
         ssh.execute_command("cd /opt/thor && git checkout {}".format(args.thor_version))
         ssh.execute_command("cd /opt/thor && sudo pip install -v .")
         ssh.execute_command("export OORB_DATA=/opt/oorb/data && python3 /opt/thor/runTHOR.py --help")
-        
+
+        # Enable sysstat to collect system resource data every 1 minute
+        ssh.execute_command("echo 'ENABLED=\"true\"' | sudo tee /etc/default/sysstat")
+        ssh.execute_command("echo '* * * * * root /usr/lib/sysstat/sa1 1 1' | sudo tee /etc/cron.d/sysstat")
+        ssh.execute_command("sudo systemctl restart sysstat")
+
+        # Download data
+        ssh.execute_command("mkdir /opt/thor-data /opt/thor-output")
+        ssh.execute_command("gsutil cp gs://thor-benchmark-data/{}/config.yaml /opt/thor-data/config.yaml".format(args.dataset))
+        ssh.execute_command("gsutil cp gs://thor-benchmark-data/{}/observations.csv /opt/thor-data/observations.csv".format(args.dataset))
+        ssh.execute_command("gsutil cp gs://thor-benchmark-data/{}/orbits.csv /opt/thor-data/orbits.csv".format(args.dataset))
+
+        # Note the time
+        ssh.execute_command("date > /opt/thor-output/start_time.txt")
+
+        # Run THOR
+        ssh.execute_command("export OORB_DATA=/opt/oorb/data && python3 /opt/thor/runTHOR.py --config /opt/thor-data/config.yaml /opt/thor-data/observations.csv /opt/thor-data/orbits.csv /opt/thor-output/")
+
+        # Note the time
+        ssh.execute_command("date > /opt/thor-output/end_time.txt")
+
+        # Collect system resource data
+        ssh.execute_command("sudo cp /var/log/sysstat/sa* /opt/thor-output/")
+
+        # Copy output to GCS
+        ssh.execute_command("gsutil cp -r /opt/thor-output gs://thor-benchmark-data/{}/results/".format(args.dataset))
+
+
+
 
     except Exception as e:
         print(e)
@@ -78,6 +114,6 @@ def main():
         if args.cleanup:
             create_instance.delete_instance("moeyens-thor-dev", "us-west1-b", name)
 
-    
+
 if __name__ == "__main__":
     main()
