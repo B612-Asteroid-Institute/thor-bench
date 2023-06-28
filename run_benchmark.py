@@ -117,8 +117,14 @@ def install_openorb(ssh, native_comp=False):
         ssh.execute_command(
             "sed -i 's/FCOPTIONS = .*/FCOPTIONS = $(FCOPTIONS_OPT_GFORTRAN) -march=native/g' /opt/oorb/Makefile.include"
         )
-    ssh.execute_command("sudo pip install -v /opt/oorb")
-    ssh.execute_command("cd /opt/oorb && make ephem")
+    ssh.execute_command("sudo pip install -v setuptools wheel")
+
+    # --no-build-isolation is needed because we need to ensure we use
+    # the same version of numpy as the one we compiled previously so
+    # that it matches the version of f2py we passed in to ./configure.
+    ssh.execute_command("sudo pip install --no-build-isolation -v /opt/oorb")
+
+    ssh.execute_command("cd /opt/oorb && sudo make ephem")
 
 
 def install_thor(ssh):
