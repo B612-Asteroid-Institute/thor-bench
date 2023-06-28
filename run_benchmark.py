@@ -128,9 +128,9 @@ def install_openorb(ssh, native_comp=False):
     ssh.execute_command("cd /opt/oorb && sudo make ephem")
 
 
-def install_thor(ssh):
+def install_thor(ssh, thor_version):
     ssh.execute_command("git clone https://github.com/moeyensj/thor.git /opt/thor")
-    ssh.execute_command("cd /opt/thor && git checkout {}".format(args.thor_version))
+    ssh.execute_command("cd /opt/thor && git checkout {}".format(thor_version))
     ssh.execute_command("cd /opt/thor && sudo pip install -v .")
 
 
@@ -198,7 +198,7 @@ def main():
             install_mkl(ssh)
         install_numpy(ssh, native_comp=args.native_comp)
         install_openorb(ssh, native_comp=args.native_comp)
-        install_thor(ssh)
+        install_thor(ssh, args.thor_version)
 
         enable_sysstat(ssh)
 
