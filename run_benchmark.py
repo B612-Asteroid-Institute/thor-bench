@@ -3,33 +3,147 @@ import create_instance
 import ssh_instance
 import random
 import string
+import google.cloud.storage
 
 PROJECT = "moeyens-thor-dev"
 ZONE = "us-west1-b"
 
+
 def parse_args():
-    parser = argparse.ArgumentParser(description='Benchmarking script for "thor" on Google Cloud Instances')
+    parser = argparse.ArgumentParser(
+        description='Benchmarking script for "thor" on Google Cloud Instances'
+    )
 
-    parser.add_argument('-i', '--instance', type=str, required=True,
-                        help='The instance class to launch')
+    parser.add_argument(
+        "-i", "--instance", type=str, required=True, help="The instance class to launch"
+    )
 
-    parser.add_argument('-t', '--thor-version', type=str, required=True,
-                        help='The version of thor to install (as a git SHA)')
+    parser.add_argument(
+        "-t",
+        "--thor-version",
+        type=str,
+        required=True,
+        help="The version of thor to install (as a git SHA)",
+    )
 
-    parser.add_argument('-d', '--dataset', type=str, required=True,
-                        help='The specific dataset inputs to provide')
+    parser.add_argument(
+        "-d",
+        "--dataset",
+        type=str,
+        required=True,
+        help="The specific dataset inputs to provide",
+    )
 
-    parser.add_argument("-u", "--username", type=str, required=True,
-                        help="The username to use for the SSH key")
-    parser.add_argument("--no-cleanup", action="store_false", dest="cleanup",
-                        help="Do not delete the instance after running")
+    parser.add_argument(
+        "-u",
+        "--username",
+        type=str,
+        required=True,
+        help="The username to use for the SSH key",
+    )
+    parser.add_argument(
+        "--no-cleanup",
+        action="store_false",
+        dest="cleanup",
+        help="Do not delete the instance after running",
+    )
+
+    parser.add_argument(
+        "--native-comp",
+        action="store_true",
+        dest="native_comp",
+        help="Compile a tuned binary for THOR and its dependencies",
+    )
+
+    parser.add_argument(
+        "--use-mkl",
+        action="store_true",
+        dest="use_mkl",
+        help="Use Intel MKL for linear algebra operations",
+    )
 
     args = parser.parse_args()
     return args
 
 
 def rand_str(length):
-    return ''.join(random.choice(string.ascii_lowercase) for i in range(length))
+    return "".join(random.choice(string.ascii_lowercase) for i in range(length))
+
+
+def install_python(ssh):
+    ssh.execute_command("sudo apt-get install -y python3-pip python3")
+
+
+def install_mkl(ssh):
+    # Install Intel MKL
+    ssh.execute_command(
+        "wget -O- https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
+| gpg --dearmor | sudo tee /usr/share/keyrings/oneapi-archive-keyring.gpg > /dev/null"
+    )
+    ssh.execute_command(
+        'echo "deb [signed-by=/usr/share/keyrings/oneapi-archive-keyring.gpg] https://apt.repos.intel.com/oneapi all main" | sudo tee /etc/apt/sources.list.d/oneAPI.list'
+    )
+    ssh.execute_command("sudo apt-get update -y")
+    ssh.execute_command("sudo apt-get install -y intel-oneapi-mkl")
+
+
+def install_numpy(ssh, native_comp=False):
+    if not native_comp:
+        ssh.execute_command("sudo pip install numpy==1.24")
+        return
+
+    # Install numpy from source
+    ssh.execute_command("git clone https://github.com/numpy/numpy.git /opt/numpy")
+    ssh.execute_command("sudo pip install -y cython")
+    ssh.execute_command(
+        "cd /opt/numpy && git checkout v1.24.4 && sudo python3 setup.py build --cpu-baseline=native install"
+    )
+
+
+def install_openorb(ssh, native_comp=False):
+    ssh.execute_command("apt-get install -y gfortran liblapack-dev")
+    ssh.execute_command("git clone https://github.com/oorb/oorb.git /opt/oorb")
+    ssh.execute_command(
+        "cd /opt/oorb && ./configure gfortran opt --with-pyoorb --with-f2py=/usr/local/bin/f2py --with-python=python3"
+    )
+    if native_comp:
+        # Add '-march=native' to compiler options by running a sed
+        # script directly on the Makefile.includse file. This is a
+        # hack to get around the fact that the configure script
+        # doesn't support this option.
+        ssh.execute_command(
+            "sed -i 's/FCOPTIONS = .*/FCOPTIONS = $(FCOPTIONS_OPT_GFORTRAN) -march=native/g' /opt/oorb/Makefile.include"
+        )
+    ssh.execute_command("sudo pip install -v /opt/oorb")
+    ssh.execute_command("cd /opt/oorb && make ephem")
+
+
+def install_thor(ssh):
+    ssh.execute_command("git clone https://github.com/moeyensj/thor.git /opt/thor")
+    ssh.execute_command("cd /opt/thor && git checkout {}".format(args.thor_version))
+    ssh.execute_command("cd /opt/thor && sudo pip install -v .")
+
+
+def enable_sysstat(ssh, interval_seconds=1, count=60):
+    ssh.execute_command("sudo apt-get install -y sysstat")
+    ssh.execute_command("echo 'ENABLED=\"true\"' | sudo tee /etc/default/sysstat")
+    ssh.execute_command(
+        "echo '* * * * * root /usr/lib/sysstat/sa1 10 6' | sudo tee /etc/cron.d/sysstat"
+    )
+    ssh.execute_command("sudo systemctl restart sysstat")
+
+
+def load_dataset(ssh, dataset):
+    ssh.execute_command("mkdir /opt/thor-data /opt/thor-output")
+    ssh.execute_command(
+        f"gsutil cp gs://thor-benchmark-data/{dataset}/config.yaml /opt/thor-data/config.yaml"
+    )
+    ssh.execute_command(
+        f"gsutil cp gs://thor-benchmark-data/{dataset}/observations.csv /opt/thor-data/observations.csv"
+    )
+    ssh.execute_command(
+        f"gsutil cp gs://thor-benchmark-data/{dataset}/orbits.csv /opt/thor-data/orbits.csv"
+    )
 
 
 def main():
@@ -43,7 +157,7 @@ def main():
         instance_name=name,
         service_account=create_instance.service_account(
             "thor-benchmarker@moeyens-thor-dev.iam.gserviceaccount.com",
-            ["https://www.googleapis.com/auth/cloud-platform"]
+            ["https://www.googleapis.com/auth/cloud-platform"],
         ),
         disks=[
             create_instance.disk_from_image(
@@ -62,40 +176,32 @@ def main():
         ssh.wait_for_connection()
 
         # Install system dependencies
-        ssh.execute_command("sudo add-apt-repository -y http://us-west1.gce.archive.ubuntu.com/ubuntu")
+        ssh.execute_command(
+            "sudo add-apt-repository -y http://us-west1.gce.archive.ubuntu.com/ubuntu"
+        )
         ssh.execute_command("sudo apt-get update -y")
-        ssh.execute_command("sudo apt-get install -y git python3-pip python3 gfortran liblapack-dev sysstat")
-
-        # Install openorb and thor
+        ssh.execute_command("sudo apt-get install -y git")
         ssh.execute_command("sudo chmod 777 /opt")
-        ssh.execute_command("git clone https://github.com/moeyensj/thor.git /opt/thor")
-        ssh.execute_command("git clone https://github.com/oorb/oorb.git /opt/oorb")
-        ssh.execute_command("pip install numpy==1.24")
-        ssh.execute_command("sudo ln -sf ~/.local/bin/f2py /usr/bin/f2py")
-        ssh.execute_command("cd /opt/oorb && ./configure gfortran opt --with-pyoorb --with-f2py=/usr/bin/f2py --with-python=python3")
-        ssh.execute_command("sudo pip install -v /opt/oorb")
-        ssh.execute_command("pip uninstall numpy -y")
-        ssh.execute_command("cd /opt/oorb && make ephem")
-        ssh.execute_command("cd /opt/thor && git checkout {}".format(args.thor_version))
-        ssh.execute_command("cd /opt/thor && sudo pip install -v .")
-        ssh.execute_command("export OORB_DATA=/opt/oorb/data && python3 /opt/thor/runTHOR.py --help")
 
-        # Enable sysstat to collect system resource data every 1 minute
-        ssh.execute_command("echo 'ENABLED=\"true\"' | sudo tee /etc/default/sysstat")
-        ssh.execute_command("echo '* * * * * root /usr/lib/sysstat/sa1 1 1' | sudo tee /etc/cron.d/sysstat")
-        ssh.execute_command("sudo systemctl restart sysstat")
+        install_python(ssh)
+        if args.use_mkl:
+            install_mkl(ssh)
+        install_numpy(ssh, native_comp=args.native_comp)
+        install_openorb(ssh, native_comp=args.native_comp)
+        install_thor(ssh)
+
+        enable_sysstat(ssh)
 
         # Download data
-        ssh.execute_command("mkdir /opt/thor-data /opt/thor-output")
-        ssh.execute_command(f"gsutil cp gs://thor-benchmark-data/{args.dataset}/config.yaml /opt/thor-data/config.yaml")
-        ssh.execute_command(f"gsutil cp gs://thor-benchmark-data/{args.dataset}/observations.csv /opt/thor-data/observations.csv")
-        ssh.execute_command(f"gsutil cp gs://thor-benchmark-data/{args.dataset}/orbits.csv /opt/thor-data/orbits.csv")
+        load_dataset(ssh, args.dataset)
 
         # Note the time
         ssh.execute_command("date > /opt/thor-output/start_time.txt")
 
         # Run THOR
-        ssh.execute_command("export OORB_DATA=/opt/oorb/data && python3 /opt/thor/runTHOR.py --config /opt/thor-data/config.yaml /opt/thor-data/observations.csv /opt/thor-data/orbits.csv /opt/thor-output/thor/")
+        ssh.execute_command(
+            "export OORB_DATA=/opt/oorb/data && python3 /opt/thor/runTHOR.py --config /opt/thor-data/config.yaml /opt/thor-data/observations.csv /opt/thor-data/orbits.csv /opt/thor-output/thor/"
+        )
 
         # Note the time
         ssh.execute_command("date > /opt/thor-output/end_time.txt")
@@ -104,11 +210,19 @@ def main():
         ssh.execute_command("sudo cp /var/log/sysstat/sa* /opt/thor-output/")
 
         # Copy output to GCS
-        ssh.execute_command(f"gsutil cp -r /opt/thor-output gs://thor-benchmark-data/{args.dataset}/results/{name}/")
+        ssh.execute_command(
+            f"gsutil cp -r /opt/thor-output gs://thor-benchmark-data/{args.dataset}/results/{name}/"
+        )
+
+        google.cloud.storage.Client().bucket("thor-benchmark-data").blob(
+            f"{args.dataset}/results/{name}/benchmark-parameters.json"
+        ).upload_from_string(json.dumps(vars(args)))
 
         print("all done!")
         print(f"results are in gs://thor-benchmark-data/{args.dataset}/results/{name}")
-        print(f"download command: \n\tgsutil cp -r gs://thor-benchmark-data/{args.dataset}/results/{name}/ .")
+        print(
+            f"download command: \n\tgsutil cp -r gs://thor-benchmark-data/{args.dataset}/results/{name}/ ."
+        )
 
     except Exception as e:
         print(e)
