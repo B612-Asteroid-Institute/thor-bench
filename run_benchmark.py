@@ -94,14 +94,17 @@ def install_numpy(ssh, native_comp=False):
 
     # Install numpy from source
     ssh.execute_command("git clone https://github.com/numpy/numpy.git /opt/numpy")
-    ssh.execute_command("sudo pip install -y cython")
+    ssh.execute_command("sudo pip install cython")
     ssh.execute_command(
-        "cd /opt/numpy && git checkout v1.24.4 && sudo python3 setup.py build --cpu-baseline=native install"
+        "cd /opt/numpy && git checkout v1.24.4 && git submodule update --init"
+    )
+    ssh.execute_command(
+        "cd /opt/numpy && sudo python3 setup.py build --cpu-baseline=native install"
     )
 
 
 def install_openorb(ssh, native_comp=False):
-    ssh.execute_command("apt-get install -y gfortran liblapack-dev")
+    ssh.execute_command("sudo apt-get install -y gfortran liblapack-dev")
     ssh.execute_command("git clone https://github.com/oorb/oorb.git /opt/oorb")
     ssh.execute_command(
         "cd /opt/oorb && ./configure gfortran opt --with-pyoorb --with-f2py=/usr/local/bin/f2py --with-python=python3"
