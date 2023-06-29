@@ -7,7 +7,7 @@ import string
 import google.cloud.storage
 
 PROJECT = "moeyens-thor-dev"
-ZONE = "us-west1-b"
+ZONE = "us-central1-a"
 
 
 def parse_args():
@@ -75,6 +75,12 @@ def install_python(ssh):
     ssh.execute_command("sudo apt-get install -y python3-pip python3")
 
 
+def apt_repo(zone):
+    # eg us-central1-a becomes http://us-central1.gce.archive.ubuntu.com/ubuntu"
+    region, _ = zone.rsplit("-", 1)
+    return "http://{}.gce.archive.ubuntu.com/ubuntu".format(region)
+
+
 def install_mkl(ssh):
     # Install Intel MKL
     ssh.execute_command(
@@ -94,6 +100,7 @@ def install_numpy(ssh, native_comp=False):
         return
 
     # Install numpy from source
+    ssh.execute_command("sudo apt-get install -y gfortran liblapack-dev")
     ssh.execute_command("git clone https://github.com/numpy/numpy.git /opt/numpy")
     ssh.execute_command("sudo pip install cython")
     ssh.execute_command(
@@ -128,7 +135,11 @@ def install_openorb(ssh, native_comp=False):
     ssh.execute_command("cd /opt/oorb && sudo make ephem")
 
 
-def install_thor(ssh, thor_version):
+def install_thor(ssh: ssh_instance.SSH, thor_version: str, arm: bool=False):
+    if arm:
+        # Need to build healpy from source since no wheel is available.
+        ssh.execute_command("sudo apt-get install -y pkg-config libcfitsio-dev")
+    
     ssh.execute_command("git clone https://github.com/moeyensj/thor.git /opt/thor")
     ssh.execute_command("cd /opt/thor && git checkout {}".format(thor_version))
     ssh.execute_command("cd /opt/thor && sudo pip install -v .")
@@ -161,6 +172,13 @@ def main():
 
     name = f"benchmark-thor-{args.instance}-{args.thor_version[:6]}-{rand_str(4)}"
 
+    if args.instance.startswith("t2a"):
+        # ARM
+        image = "projects/ubuntu-os-cloud/global/images/ubuntu-2204-jammy-arm64-v20230616"
+    else:
+        # x86
+        image = "projects/ubuntu-os-cloud/global/images/ubuntu-2204-jammy-v20230616"
+
     instance = create_instance.create_instance(
         project_id=PROJECT,
         zone=ZONE,
@@ -171,10 +189,10 @@ def main():
         ),
         disks=[
             create_instance.disk_from_image(
-                disk_type=f"zones/{ZONE}/diskTypes/pd-standard",
+                disk_type=f"zones/{ZONE}/diskTypes/pd-balanced",
                 disk_size_gb=100,
                 boot=True,
-                source_image="projects/ubuntu-os-cloud/global/images/ubuntu-2204-jammy-v20230616",
+                source_image=image,
             ),
         ],
         external_access=True,
@@ -186,9 +204,11 @@ def main():
         ssh.wait_for_connection()
 
         # Install system dependencies
-        ssh.execute_command(
-            "sudo add-apt-repository -y http://us-west1.gce.archive.ubuntu.com/ubuntu"
-        )
+        if not args.instance.startswith("t2a"):
+            ssh.execute_command(f"sudo add-apt-repository -y {apt_repo(ZONE)}",)
+        else:
+            # ARM
+            pass
         ssh.execute_command("sudo apt-get update -y")
         ssh.execute_command("sudo apt-get install -y git")
         ssh.execute_command("sudo chmod 777 /opt")
@@ -198,7 +218,7 @@ def main():
             install_mkl(ssh)
         install_numpy(ssh, native_comp=args.native_comp)
         install_openorb(ssh, native_comp=args.native_comp)
-        install_thor(ssh, args.thor_version)
+        install_thor(ssh, args.thor_version, arm=args.instance.startswith("t2a"))
 
         enable_sysstat(ssh)
 
@@ -238,7 +258,7 @@ def main():
         print(e)
     finally:
         if args.cleanup:
-            create_instance.delete_instance("moeyens-thor-dev", "us-west1-b", name)
+            create_instance.delete_instance(PROJECT, ZONE, name)
 
 
 if __name__ == "__main__":
