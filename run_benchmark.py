@@ -73,6 +73,13 @@ def rand_str(length):
 
 def install_python(ssh):
     ssh.execute_command("sudo apt-get install -y python3-pip python3")
+    ssh.execute_command("pip3 install --upgrade pip")
+
+
+def install_rust(ssh):
+    ssh.execute_command("curl https://sh.rustup.rs -sSf | sh -s -- -y")
+    ssh.execute_command("source $HOME/.cargo/env && rustup install stable")
+    ssh.execute_command("pip install maturin")
 
 
 def apt_repo(zone):
@@ -96,18 +103,19 @@ def install_mkl(ssh):
 
 def install_numpy(ssh, native_comp=False):
     if not native_comp:
-        ssh.execute_command("sudo pip install numpy==1.24")
+        ssh.execute_command("pip install numpy==1.24")
         return
 
     # Install numpy from source
     ssh.execute_command("sudo apt-get install -y gfortran liblapack-dev")
     ssh.execute_command("git clone https://github.com/numpy/numpy.git /opt/numpy")
-    ssh.execute_command("sudo pip install cython")
+    ssh.execute_command("pip install cython")
     ssh.execute_command(
         "cd /opt/numpy && git checkout v1.24.4 && git submodule update --init"
     )
+    ssh.execute_command("sudo chown -R $USER /usr/local")
     ssh.execute_command(
-        "cd /opt/numpy && sudo python3 setup.py build --cpu-baseline=native install"
+        "cd /opt/numpy && python3 setup.py build --cpu-baseline=native install --prefix=/usr/local"
     )
 
 
@@ -125,12 +133,12 @@ def install_openorb(ssh, native_comp=False):
         ssh.execute_command(
             "sed -i 's/FCOPTIONS = .*/FCOPTIONS = $(FCOPTIONS_OPT_GFORTRAN) -march=native/g' /opt/oorb/Makefile.include"
         )
-    ssh.execute_command("sudo pip install -v setuptools wheel")
+    ssh.execute_command("pip install -v setuptools wheel")
 
     # --no-build-isolation is needed because we need to ensure we use
     # the same version of numpy as the one we compiled previously so
     # that it matches the version of f2py we passed in to ./configure.
-    ssh.execute_command("sudo pip install --no-build-isolation -v /opt/oorb")
+    ssh.execute_command("pip install --no-build-isolation -v /opt/oorb")
 
     ssh.execute_command("cd /opt/oorb && sudo make ephem")
 
@@ -142,7 +150,7 @@ def install_thor(ssh: ssh_instance.SSH, thor_version: str, arm: bool=False):
     
     ssh.execute_command("git clone https://github.com/moeyensj/thor.git /opt/thor")
     ssh.execute_command("cd /opt/thor && git checkout {}".format(thor_version))
-    ssh.execute_command("cd /opt/thor && sudo pip install -v .")
+    ssh.execute_command("source $HOME/.cargo/env && cd /opt/thor && pip install -v .")
 
 
 def enable_sysstat(ssh, interval_seconds=1, count=60):
@@ -218,6 +226,7 @@ def main():
             install_mkl(ssh)
         install_numpy(ssh, native_comp=args.native_comp)
         install_openorb(ssh, native_comp=args.native_comp)
+        install_rust(ssh)
         install_thor(ssh, args.thor_version, arm=args.instance.startswith("t2a"))
 
         enable_sysstat(ssh)
@@ -238,6 +247,7 @@ def main():
 
         # Collect system resource data
         ssh.execute_command("sudo cp /var/log/sysstat/sa* /opt/thor-output/")
+        ssh.execute_command(f"sudo chown -R {args.username} /opt/thor-output/sa*")
 
         # Copy output to GCS
         ssh.execute_command(
